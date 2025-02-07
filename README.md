@@ -1,3 +1,3 @@
 # Dharat-tools
 
-The work Dharat is a Gurmuakhi (Punjabi) word, which means Earth/land. 
+The word Dharat is a Gurmuakhi (Punjabi) word, which means Earth/land. 
