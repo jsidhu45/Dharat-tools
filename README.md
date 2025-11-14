@@ -19,6 +19,8 @@ Step 5. Wait for code to execute and final interpolated results will be saved in
 
 **Initially run with smaller iterations and coarser DEM resolution to check computation time**
 
+Currenty the code is in raw form, in future improvements will be updated to optimize and speed up the code. 
+
 "THIS IS RESEARCH CODE PROVIDED TO YOU "AS IS" WITH NO WARRANTIES OF CORRECTNESS. USE AT YOUR OWN RISK."
 
 For more information contact: jaspreet_singh_10@sfu.ca
