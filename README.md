@@ -23,6 +23,6 @@ Currenty the code is in raw form, in future improvements will be updated to opti
 
 "THIS IS RESEARCH CODE PROVIDED TO YOU "AS IS" WITH NO WARRANTIES OF CORRECTNESS. USE AT YOUR OWN RISK."
 
-For more information contact: jaspreet_singh_10@sfu.ca
+For more information contact: jaspreet_singh_1@sfu.ca
 
 Singh, J and Sepúlveda, S., 2025. Assessing the landslide failure surface depth and volume: A new spline interpolation method. Engineering Geology. DOI: 10.1016/j.enggeo.2025.108319 
