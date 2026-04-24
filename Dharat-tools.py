@@ -24,7 +24,7 @@ from typing import Tuple
 
 import numpy as np
 import pandas as pd
-from osgeo import gdal
+from osgeo import gdal, ogr
 from scipy import interpolate
 import warnings
 
@@ -94,35 +94,83 @@ def clip_dem_to_boundary(dem_dataset: gdal.Dataset, boundary_filename: str) -> T
     if not boundary_path.exists():
         raise FileNotFoundError(f"Boundary file not found: {boundary_path}")
 
+    # Ensure it's a .shp file
+    if not str(boundary_path).endswith('.shp'):
+        raise ValueError(f"Boundary file must be a shapefile (.shp), got: {boundary_path}")
+
+    # Validate shapefile and check geometry type
+    try:
+        shapefile_ds = ogr.Open(str(boundary_path))
+        if shapefile_ds is None:
+            raise ValueError(f"Could not open shapefile: {boundary_path}")
+        
+        layer = shapefile_ds.GetLayer(0)
+        if layer is None:
+            raise ValueError(f"No layers found in shapefile: {boundary_path}")
+        
+        layer_name = layer.GetName()
+        
+        # Check geometry type
+        feature = layer.GetFeature(0)
+        if feature is None:
+            raise ValueError(f"No features found in shapefile layer: {boundary_path}")
+        
+        geom = feature.GetGeometryRef()
+        geom_type = geom.GetGeometryName()
+        
+        # Support ESRI polygon types including Z and M variants
+        valid_types = ['POLYGON', 'MULTIPOLYGON', 'POLYGON Z', 'POLYGON M', 'POLYGON ZM', 
+                       'MULTIPOLYGON Z', 'MULTIPOLYGON M', 'MULTIPOLYGON ZM']
+        
+        if geom_type not in valid_types:
+            raise ValueError(f"Shapefile must contain POLYGON or MULTIPOLYGON geometries, got: {geom_type}")
+        
+        logger.info(f"Validated shapefile geometry: {geom_type} with {layer.GetFeatureCount()} feature(s)")
+        shapefile_ds = None  # Close the dataset
+        
+    except Exception as e:
+        logger.error(f"Error validating shapefile: {e}")
+        raise
+
     clipped_path = OUTPUT_DIR / 'DEM_clip.tif'
     logger.info(f"Clipping DEM to boundary: {boundary_path}")
-    dem_clip = gdal.Warp(str(clipped_path), dem_dataset, cutlineDSName=str(boundary_path), dstNodata=np.nan)
+    
+    try:
+        # Use cutlineLayer to specify the layer explicitly
+        dem_clip = gdal.Warp(str(clipped_path), dem_dataset, 
+                            cutlineDSName=str(boundary_path), 
+                            cutlineLayer=layer_name,
+                            cropToCutline=True,
+                            dstNodata=np.nan)
+        
+        if dem_clip is None:
+            raise RuntimeError("gdal.Warp returned None. Check if the cutline geometry is valid.")
+        
+        clip_arr = dem_clip.GetRasterBand(1).ReadAsArray()
+        return dem_clip, clip_arr
+        
+    except Exception as e:
+        logger.error(f"Error during DEM clipping: {e}")
+        raise
 
-    clip_arr = dem_clip.GetRasterBand(1).ReadAsArray()
-    return dem_clip, clip_arr
 
-
-def prepare_dataframes(dem_dataset: gdal.Dataset, clip_arr: np.ndarray) -> Tuple[pd.DataFrame, pd.DataFrame, int, int]:
+def prepare_dataframes(dem_resampled: gdal.Dataset, dem_clip: gdal.Dataset) -> Tuple[pd.DataFrame, pd.DataFrame, int, int]:
     """Prepare dataframes from DEM and clipped data.
 
     Args:
-        dem_dataset: Resampled DEM dataset
-        clip_arr: Clipped DEM array
+        dem_resampled: Resampled (but not clipped) DEM dataset
+        dem_clip: Clipped DEM dataset
 
     Returns:
         Tuple of (full_box_df, inside_df, sub_rows, sub_cols)
     """
     # Convert full DEM to XYZ
     box_xyz_path = OUTPUT_DIR / 'box_xyz.xyz'
-    gdal.Translate(str(box_xyz_path), dem_dataset) #It should be resampled dem
+    gdal.Translate(str(box_xyz_path), dem_resampled)
     df_box = pd.read_csv(box_xyz_path, sep=" ", header=None, names=['x', 'y', 'z'])
    
     # Convert clipped DEM to XYZ and filter valid points
     inn_xyz_path = OUTPUT_DIR / 'inn_xyz.xyz'
-    dem_clip, _ = clip_dem_to_boundary(dem_dataset, '') # Wait, need to fix this - boundary is already clipped
-    # Actually, let's refactor this properly
-
-    # For now, assume dem_clip is passed
     gdal.Translate(str(inn_xyz_path), dem_clip)
     df_inn_xyz = pd.read_csv(inn_xyz_path, sep=" ", header=None, names=['x', 'y', 'z'])
     
@@ -240,10 +288,10 @@ def perform_interpolation(fill: bool,df_box: pd.DataFrame, df_inn: pd.DataFrame,
         #Compute volume and max depth after each iteration
         current_vol = np.abs(np.sum(interpolated_z - z_arr)*gt[1]*gt[1])
         delta_vol = np.abs(current_vol - prev_vol)
-        current_max_depth = np.abs(np.max(interpolated_z - z_arr))
+        current_max_depth = np.max(np.abs(interpolated_z - z_arr))
 
         #print volume updates every 500 iterations
-        if iterations % 25 == 0:
+        if iterations % 500 == 0:
             logger.info(f"Iteration {iterations}: Delta Volume = {delta_vol}: Volume = {current_vol} m\u00b3: Max Depth = {current_max_depth} meters")
         
         # Save intermediate results
@@ -266,7 +314,7 @@ def perform_interpolation(fill: bool,df_box: pd.DataFrame, df_inn: pd.DataFrame,
     #logger.info(f"Total iterations: {iterations}")
     logger.info(f"Interpolation completed! Total iterations: {iterations} Time per iteration: {time_per_iter:.2f} seconds")
     pd.DataFrame(interpolated_z).to_excel(RESULTS_DIR / 'interpolated_final.xlsx', index=False)
-    logger.info(f"Final Volume = {current_vol} m\u00b3: Max Depth = {np.abs(np.max(interpolated_z - z_arr))} meters")
+    logger.info(f"Final Volume = {current_vol} m\u00b3: Max Depth = {np.max(np.abs(interpolated_z - z_arr))} meters")
 
     return interpolated_z, z_arr
 
@@ -307,7 +355,7 @@ def process_landslide_data(fill:bool, dem_filename: str, resolution: float, boun
     dem_clip, clip_arr = clip_dem_to_boundary(dem_resampled, boundary_filename)
 
     # Prepare dataframes
-    df_box, df_inn, sub_rows, sub_cols = prepare_dataframes(dem_resampled, clip_arr)
+    df_box, df_inn, sub_rows, sub_cols = prepare_dataframes(dem_resampled, dem_clip)
     
     # Perform interpolation
     interpolated_matrix, z_arr = perform_interpolation(fill, df_box, df_inn, rows, cols, sub_rows, sub_cols, save_interval, stop_delta_vol, stop_max_depth, gt)
